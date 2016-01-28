@@ -4,17 +4,14 @@
 #define LIB_PATH_PROPERTY_NEW   "rild.libpath"
 #define LIB_PATH_PROPERTY_ORIG   "rild.libpath_orig"
 
-#include <android/log.h>
 #include "telephony/ril.h"
 #include <dlfcn.h>
 #include <string.h>
 #include <sys/system_properties.h>
+#include <stdlib.h>
 
-#define  LOG_TAG    "hookril"
-#define  LOGI(...)  __android_log_print(ANDROID_LOG_INFO,LOG_TAG,__VA_ARGS__)
-#define  LOGW(...)  __android_log_print(ANDROID_LOG_WARN,LOG_TAG,__VA_ARGS__)
-#define  LOGE(...)  __android_log_print(ANDROID_LOG_ERROR,LOG_TAG,__VA_ARGS__)
-#define  LOGD(...)  __android_log_print(ANDROID_LOG_DEBUG,LOG_TAG,__VA_ARGS__)
+#include "logger.h"
+#include "transmitter.h"
 
 void inner_RIL_RequestFunc(int request, void *data, size_t datalen, RIL_Token t);
 RIL_RadioState inner_RIL_RadioStateRequest(
@@ -36,7 +33,7 @@ int RIL_onQueryMyProxyIdByThread();
 #endif
 
 
-struct RIL_Env* orig_RIL_Env;
+struct RIL_Env orig_RIL_Env;
 RIL_RadioFunctions orig_RIL_RadioFunctions;
 //RIL_RequestFunc orig_RIL_RequestFunc;
 //RIL_RadioStateRequest orig_RIL_RadioStateRequest;
@@ -53,17 +50,17 @@ struct RIL_Env s_rilEnv = {
 #endif
 };
 RIL_RadioFunctions base_RIL_RadioFunctions;
-const char* (*requestToString)(int request);
+//const char* (*requestToString)(int request);
 
 /****************************   Lib functions   ****************************/
 
 const RIL_RadioFunctions* RIL_Init(const struct RIL_Env *env, int argc, char **argv) {
     char rilLibPath[PROP_VALUE_MAX];
     
-    LOGD("Start hookril init\n");
+    SLOGD("Start hookril init\n");
     
     if ( 0 == __system_property_get(LIB_PATH_PROPERTY_ORIG, rilLibPath)) {
-        LOGE("No vendor so");
+        SLOGE("No vendor so");
         return NULL;
     }
 
@@ -74,7 +71,7 @@ const RIL_RadioFunctions* RIL_Init(const struct RIL_Env *env, int argc, char **a
         return NULL;
     }
 
-    LOGD("Try to find vendor library init function");
+    SLOGD("Try to find vendor library init function");
     const RIL_RadioFunctions *(*rilInit)(const struct RIL_Env *, int, char **);
     rilInit = (const RIL_RadioFunctions *(*)(const struct RIL_Env *, int, char **))dlsym(dlHandle, "RIL_Init");
     
@@ -82,29 +79,33 @@ const RIL_RadioFunctions* RIL_Init(const struct RIL_Env *env, int argc, char **a
         LOGE("RIL_Init not defined or exported in %s", rilLibPath);
         return NULL;
     }
-    LOGD("Vendor library init function found");
+    SLOGD("Vendor library init function found");
     
-    orig_RIL_Env = (struct RIL_Env*)malloc(sizeof(struct RIL_Env));
-    memcpy(orig_RIL_Env, env, sizeof(struct RIL_Env));
+    memcpy(&orig_RIL_Env, env, sizeof(struct RIL_Env));
     
-    LOGD("Try to call vendor library init function");
+    SLOGD("Try to call vendor library init function");
     const RIL_RadioFunctions *funcs;
     funcs = rilInit(&s_rilEnv, argc, argv);
     if(funcs == NULL) {
-        LOGE("RIL_Init vendor function call error");
+        SLOGE("RIL_Init vendor function call error");
         return NULL;
     }
-    LOGD("Vendor library init function pass");
+    SLOGD("Vendor library init function pass");
     
-#ifdef MTK_RIL
-    void* librilmtkHandle = dlopen("librilmtk.so", RTLD_NOW);
-    requestToString = (const char* (*)(int))dlsym(librilmtkHandle, "requestToString");
-#else
-    void* librilmtkHandle = dlopen("libril.so", RTLD_NOW);
-    requestToString = (const char* (*)(int))dlsym(librilmtkHandle, "requestToString");
-#endif
-    if(requestToString == NULL) {
-        LOGE("requestToString function symbol looking error");
+//#ifdef MTK_RIL
+//    void* librilmtkHandle = dlopen("/system/lib/librilmtk.so", RTLD_NOW);
+//    requestToString = (const char* (*)(int))dlsym(librilmtkHandle, "requestToString");
+//#else
+//    void* librilmtkHandle = dlopen("/system/lib/libril.so", RTLD_NOW);
+//    requestToString = (const char* (*)(int))dlsym(librilmtkHandle, "requestToString");
+//#endif
+//    if(requestToString == NULL) {
+//        LOGE("requestToString function symbol looking error");
+//        return NULL;
+//    }
+    
+    if(initSocket() != 0) {
+        SLOGE("Transmitter initializations fail");
         return NULL;
     }
     
@@ -118,9 +119,19 @@ const RIL_RadioFunctions* RIL_Init(const struct RIL_Env *env, int argc, char **a
 /****************************   Base functions   ****************************/
 
 void RIL_onRequestComplete(RIL_Token t, RIL_Errno e, void *response, size_t responselen) {
+    SLOGD("Entered to RIL_onRequestComplete.");
+    orig_RIL_Env.OnRequestComplete(t, e, response, responselen);
+    
+    if(!isTransmittionActive())
+        return;
+
     int32_t token = *(int32_t*)t;
-    LOGD("Entered to %s. Token: 0x%X", "RIL_onRequestComplete", token);
-    orig_RIL_Env->OnRequestComplete(t, e, response, responselen);
+    TransData* transData = malloc(sizeof(struct TransDataHeader) + responselen);
+    transData->header.token = token;
+    transData->header.funcIdentifier = 2;
+    transData->header.datalen = responselen;
+    memcpy(transData->data, response, responselen);
+    putNextData(transData);
 }
 
 void RIL_onUnsolicitedResponse(int unsolResponse, const void *data, size_t datalen
@@ -128,42 +139,63 @@ void RIL_onUnsolicitedResponse(int unsolResponse, const void *data, size_t datal
 , RILId id
 #endif
 ) {
-    LOGD("Entered to %s. Command name: %s", "RIL_onUnsolicitedResponse", requestToString(unsolResponse));
-    orig_RIL_Env->OnUnsolicitedResponse(unsolResponse, data, datalen
+    SLOGD("Entered to RIL_onUnsolicitedResponse.");
+    orig_RIL_Env.OnUnsolicitedResponse(unsolResponse, data, datalen
 #ifdef MTK_RIL
 , id
 #endif
     );
+    
+    if(!isTransmittionActive())
+        return;
+
+    int32_t token = 0;
+    TransData* transData = malloc(sizeof(struct TransDataHeader) + datalen);
+    transData->header.token = token;
+    transData->header.funcIdentifier = 3;
+    transData->header.datalen = datalen;
+    memcpy(transData->data, data, datalen);
+    putNextData(transData);
 }
 
 void RIL_onRequestTimedCallback(RIL_TimedCallback callback, void *param, const struct timeval *relativeTime) {
-    LOGD("Entered to %s.", "RIL_requestTimedCallback");
-    orig_RIL_Env->RequestTimedCallback(callback, param, relativeTime);
+    SLOGD("Entered to RIL_requestTimedCallback.");
+    orig_RIL_Env.RequestTimedCallback(callback, param, relativeTime);
 }
 
 #ifdef MTK_RIL
 void RIL_onRequestProxyTimedCallback(RIL_TimedCallback callback, void *param, const struct timeval *relativeTime, int proxyId) {
-    LOGD("Entered to %s", "RIL_onRequestProxyTimedCallback.");
-    orig_RIL_Env->RequestProxyTimedCallback(callback, param, relativeTime, proxyId);
+    sLOGD("Entered to RIL_onRequestProxyTimedCallback.");
+    orig_RIL_Env.RequestProxyTimedCallback(callback, param, relativeTime, proxyId);
 }
 
 RILChannelId RIL_onQueryMyChannelId(RIL_Token t) {
-    LOGD("Entered to %s", "RIL_onQueryMyChannelId.");
-    return orig_RIL_Env->QueryMyChannelId(t);
+    sLOGD("Entered to RIL_onQueryMyChannelId.");
+    return orig_RIL_Env.QueryMyChannelId(t);
 }
 
 int RIL_onQueryMyProxyIdByThread() {
-    LOGD("Entered to %s", "RIL_onQueryMyProxyIdByThread.");
-    return orig_RIL_Env->QueryMyProxyIdByThread();
+    sLOGD("Entered to RIL_onQueryMyProxyIdByThread.");
+    return orig_RIL_Env.QueryMyProxyIdByThread();
 }
 #endif
 
 /****************************   Vendor functions   ****************************/
 
 void inner_RIL_RequestFunc(int request, void *data, size_t datalen, RIL_Token t) {
-    int32_t token = *(int32_t*)t;
-    LOGD("Entered to %s Command name: %s. Toket: 0x%X", "RIL_RequestFunc.", requestToString(request), token);
+    SLOGD("Entered to RIL_RequestFunc.");
     orig_RIL_RadioFunctions.onRequest(request, data, datalen, t);
+
+    if(!isTransmittionActive())
+        return;
+
+    int32_t token = *(int32_t*)t;
+    TransData* transData = malloc(sizeof(struct TransDataHeader) + datalen);
+    transData->header.token = token;
+    transData->header.funcIdentifier = 1;
+    transData->header.datalen = datalen;
+    memcpy(transData->data, data, datalen);
+    putNextData(transData);
 }
 
 RIL_RadioState inner_RIL_RadioStateRequest(
@@ -176,7 +208,17 @@ RILId rid, int *sim_status
 rid, sim_status
 #endif
     );
-    LOGD("Entered to %s.", "RIL_RadioStateRequest");
+    LOGD("Entered to RIL_RadioStateRequest. State is %d", state);
     
+    if(!isTransmittionActive())
+        return state;
+
+    int32_t token = state;
+    TransData* transData = malloc(sizeof(struct TransDataHeader));
+    transData->header.token = token;
+    transData->header.funcIdentifier = 4;
+    transData->header.datalen = 0;
+    putNextData(transData);
+
     return state;
 }

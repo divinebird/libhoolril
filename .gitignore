@@ -1,3 +1,5 @@
-hookril.o
-libhookril.so
+*.o
+*.so
 nbproject
+misc
+dis
