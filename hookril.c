@@ -126,9 +126,10 @@ void RIL_onRequestComplete(RIL_Token t, RIL_Errno e, void *response, size_t resp
         return;
 
     int32_t token = *(int32_t*)t;
-    TransData* transData = malloc(sizeof(struct TransDataHeader) + responselen);
-    transData->header.token = token;
+    TransData* transData = malloc(sizeof(TransDataHeader) + responselen);
     transData->header.funcIdentifier = 2;
+    transData->header.command = -1;
+    transData->header.token = token;
     transData->header.datalen = responselen;
     memcpy(transData->data, response, responselen);
     putNextData(transData);
@@ -149,10 +150,10 @@ void RIL_onUnsolicitedResponse(int unsolResponse, const void *data, size_t datal
     if(!isTransmittionActive())
         return;
 
-    int32_t token = 0;
-    TransData* transData = malloc(sizeof(struct TransDataHeader) + datalen);
-    transData->header.token = token;
+    TransData* transData = malloc(sizeof(TransDataHeader) + datalen);
     transData->header.funcIdentifier = 3;
+    transData->header.command = unsolResponse;
+    transData->header.token = -1;
     transData->header.datalen = datalen;
     memcpy(transData->data, data, datalen);
     putNextData(transData);
@@ -190,9 +191,10 @@ void inner_RIL_RequestFunc(int request, void *data, size_t datalen, RIL_Token t)
         return;
 
     int32_t token = *(int32_t*)t;
-    TransData* transData = malloc(sizeof(struct TransDataHeader) + datalen);
-    transData->header.token = token;
+    TransData* transData = malloc(sizeof(TransDataHeader) + datalen);
     transData->header.funcIdentifier = 1;
+    transData->header.command = request;
+    transData->header.token = token;
     transData->header.datalen = datalen;
     memcpy(transData->data, data, datalen);
     putNextData(transData);
@@ -214,9 +216,10 @@ rid, sim_status
         return state;
 
     int32_t token = state;
-    TransData* transData = malloc(sizeof(struct TransDataHeader));
-    transData->header.token = token;
+    TransData* transData = malloc(sizeof(TransDataHeader));
     transData->header.funcIdentifier = 4;
+    transData->header.command = -1;
+    transData->header.token = token;
     transData->header.datalen = 0;
     putNextData(transData);
 

@@ -10,6 +10,7 @@
 #include "transmitter.h"
 
 const char sock_path[] = "\0hookril_tranlator";
+// /data/local/tmp/socat - ABSTRACT-CONNECT:hookril_tranlator
 
 typedef struct {
     void* next;
@@ -122,10 +123,12 @@ static void* socketThreadFunk(void* arg) {
                         continue;
                     }
                     uint8_t leaveSendCycle = 0;
-                    if(write(clientFd, curItem->transData, sizeof(curItem->transData)) < 0) {
+                    size_t dataLength = sizeof(TransDataHeader) + curItem->transData->header.datalen;
+                    if(write(clientFd, curItem->transData, dataLength) < 0) {
                         LOGE("Error while send data: %s", strerror(errno));
                         leaveSendCycle = 1;
                     }
+                    LOGD("Sending data via socket. Length: %d", dataLength);
                     
                     free(curItem->transData);
                     free(curItem);

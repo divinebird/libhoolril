@@ -1,6 +1,6 @@
 CC=arm-linux-androideabi-gcc
-#CFLAGS=-O3 -Wall -fPIE
-CFLAGS=-Wall -g -ggdb -fPIE
+CFLAGS=-O3 -Wall -fPIE
+#CFLAGS=-Wall -g -ggdb -fPIE
 LIBS=-llog -pthread
 LDFLAGS=-fPIE -pie -shared
 
